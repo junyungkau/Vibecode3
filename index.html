@@ -124,14 +124,20 @@ go.addEventListener('click', async () => {
   if(!keyword){ resultEl.innerHTML = '<div class="error">무엇을 그릴지 먼저 적어주세요!</div>'; return; }
 
   go.disabled = true; go.textContent = '그리는 중...';
-  resultEl.innerHTML = '<div class="loading"><div class="spin"></div><p>붓을 들고 딸깍 그리는 중... (약 10초)</p></div>';
+  resultEl.innerHTML = '<div class="loading"><div class="spin"></div><p>붓을 들고 딸깍 그리는 중... (보통 몇 초)</p></div>';
+
+  // 65초가 지나도 응답이 없으면 강제로 멈추고 안내
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 65000);
 
   try{
     const res = await fetch('/api/generate', {
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ keyword, style, ratio })
+      body: JSON.stringify({ keyword, style, ratio }),
+      signal: controller.signal
     });
+    clearTimeout(timeout);
     if(!res.ok){
       let msg = '서버 응답 오류 ('+res.status+')';
       try{ const e = await res.json(); if(e.error) msg = e.error; }catch{}
@@ -149,7 +155,11 @@ go.addEventListener('click', async () => {
       </div>`;
     document.getElementById('again').addEventListener('click', () => go.click());
   }catch(err){
-    resultEl.innerHTML = '<div class="error">'+esc(err.message)+'</div>';
+    clearTimeout(timeout);
+    const msg = err.name === 'AbortError'
+      ? '응답이 너무 오래 걸려 중단했어요. 잠시 후 다시 시도해주세요. (트래픽이 몰리면 느려질 수 있어요)'
+      : err.message;
+    resultEl.innerHTML = '<div class="error">'+esc(msg)+'</div>';
   }finally{
     go.disabled = false; go.textContent = '이미지 딸깍';
   }
