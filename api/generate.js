@@ -1,10 +1,6 @@
 // api/generate.js
-// 학교 행사 배너/썸네일 이미지 생성 (NVIDIA Qwen-Image)
+// 학교 행사 배너/썸네일 이미지 생성 (NVIDIA Qwen-Image, OpenAI 호환 엔드포인트)
 // NVIDIA API 키는 여기서만 사용됩니다. Vercel 환경변수 NVIDIA_API_KEY 필요.
-//
-// NVIDIA 이미지 API는 비동기 방식입니다.
-//  - 처음 요청 시 즉시 200(완료) 또는 202(처리중 + NVCF-REQID)를 받습니다.
-//  - 202를 받으면 status 엔드포인트를 폴링해서 완료를 기다립니다.
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'POST만 허용됩니다.' });
@@ -22,7 +18,6 @@ export default async function handler(req, res) {
     '미니멀 배너': 'minimalist banner, lots of negative space, single focal element, muted tones, elegant',
     '팝아트 활기': 'vibrant pop art style, bright saturated colors, energetic, playful, bold outlines'
   };
-  // Qwen-Image가 지원하는 비율 (1:1, 16:9, 9:16 등)
   const ratioMap = {
     '정사각형 (인스타)': { width: 1024, height: 1024 },
     '가로 (배너/썸네일)': { width: 1280, height: 720 },
@@ -32,8 +27,8 @@ export default async function handler(req, res) {
   const size = ratioMap[ratio] || ratioMap['정사각형 (인스타)'];
   const prompt = `${keyword}, ${stylePrompt}, no text, no letters, no words`;
 
-  // Qwen-Image 클라우드 엔드포인트
-  const INVOKE_URL = 'https://ai.api.nvidia.com/v1/genai/qwen/qwen-image';
+  // OpenAI 호환 이미지 생성 엔드포인트 (모델명은 버전 포함)
+  const INVOKE_URL = 'https://ai.api.nvidia.com/v1/images/generations';
   const STATUS_URL = 'https://api.nvcf.nvidia.com/v2/nvcf/pexec/status/';
 
   const headers = {
@@ -43,36 +38,35 @@ export default async function handler(req, res) {
   };
 
   const payload = JSON.stringify({
+    model: 'qwen/qwen-image-2512',
     prompt,
     width: size.width,
     height: size.height,
-    seed: Math.floor(Math.random() * 1000000),
-    steps: 4,
-    cfg_scale: 4.0
+    n: 1,
+    response_format: 'b64_json'
   });
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
   const extractImage = (data) =>
+    data?.data?.[0]?.b64_json ||
+    data?.data?.[0]?.url ||
     data?.artifacts?.[0]?.base64 ||
     data?.image ||
-    data?.data?.[0]?.b64_json ||
-    data?.images?.[0]?.b64_json ||
     (Array.isArray(data?.images) ? data.images[0] : null) ||
-    data?.output?.[0] ||
     null;
 
   try {
     let r = await fetch(INVOKE_URL, { method: 'POST', headers, body: payload });
 
+    // 비동기 응답(202) 대비 폴링
     if (r.status === 202) {
       const reqId = r.headers.get('nvcf-reqid');
       if (!reqId) {
         console.error('202인데 NVCF-REQID 헤더가 없음');
         return res.status(502).json({ error: '이미지 요청 ID를 받지 못했습니다.' });
       }
-
-      const maxAttempts = 36; // 최대 약 54초
+      const maxAttempts = 36;
       for (let i = 0; i < maxAttempts; i++) {
         await sleep(1500);
         r = await fetch(STATUS_URL + reqId, { method: 'GET', headers });
@@ -82,7 +76,6 @@ export default async function handler(req, res) {
         console.error('폴링 중 오류:', r.status, errText);
         return res.status(502).json({ error: `이미지 생성 실패 (폴링 코드 ${r.status})` });
       }
-
       if (r.status !== 200) {
         return res.status(504).json({ error: '이미지 생성이 시간 내에 완료되지 않았어요. 다시 시도해주세요.' });
       }
@@ -93,15 +86,18 @@ export default async function handler(req, res) {
     }
 
     const data = await r.json();
-    const b64 = extractImage(data);
+    const out = extractImage(data);
 
-    if (!b64) {
+    if (!out) {
       console.error('이미지 데이터 없음:', JSON.stringify(data).slice(0, 800));
       return res.status(502).json({ error: '이미지 응답 형식을 해석하지 못했습니다.' });
     }
 
-    // 이미 data:image 형식이면 그대로, 아니면 붙여줌
-    const src = b64.startsWith('data:') ? b64 : `data:image/png;base64,${b64}`;
+    // URL이면 그대로, base64면 data URI로 변환
+    const src = out.startsWith('http') ? out
+      : out.startsWith('data:') ? out
+      : `data:image/png;base64,${out}`;
+
     return res.status(200).json({ image: src, prompt });
   } catch (e) {
     console.error('서버 오류:', e);
