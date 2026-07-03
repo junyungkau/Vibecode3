@@ -54,7 +54,7 @@
     box-shadow:6px 8px 0 var(--ink); padding:18px; animation:pop .4s ease;
   }
   @keyframes pop{ from{ opacity:0; transform:translateY(8px);} }
-  .imgcard img{ width:100%; border-radius:10px; display:block; }
+  .imgcard img{ width:100%; border-radius:10px; display:block; background:var(--paper); }
   .actions{ display:flex; gap:10px; margin-top:16px; }
   .actions a, .actions button{
     flex:1; text-align:center; text-decoration:none;
@@ -90,19 +90,19 @@
     <div class="field">
       <label for="style">스타일</label>
       <select id="style">
-        <option>깔끔한 포스터</option>
-        <option>따뜻한 일러스트</option>
-        <option>레트로 감성</option>
-        <option>미니멀 배너</option>
-        <option>팝아트 활기</option>
+        <option value="clean modern flat poster design, bold geometric shapes, professional, high contrast">깔끔한 포스터</option>
+        <option value="warm cozy hand-drawn illustration, soft pastel colors, friendly, storybook style">따뜻한 일러스트</option>
+        <option value="retro vintage aesthetic, 80s 90s style, grainy texture, nostalgic color palette">레트로 감성</option>
+        <option value="minimalist banner, lots of negative space, single focal element, muted tones, elegant">미니멀 배너</option>
+        <option value="vibrant pop art style, bright saturated colors, energetic, playful, bold outlines">팝아트 활기</option>
       </select>
     </div>
     <div class="field">
       <label for="ratio">비율</label>
       <select id="ratio">
-        <option>정사각형 (인스타)</option>
-        <option>가로 (배너/썸네일)</option>
-        <option>세로 (포스터)</option>
+        <option value="1024x1024">정사각형 (인스타)</option>
+        <option value="1280x720">가로 (배너/썸네일)</option>
+        <option value="720x1280">세로 (포스터)</option>
       </select>
     </div>
   </div>
@@ -110,62 +110,56 @@
 
   <div id="result"></div>
 
-  <footer>Powered by NVIDIA FLUX.1-schnell (free API) · 학교 어디서든 쓰세요</footer>
+  <footer>Powered by Pollinations AI (free) · 학교 어디서든 쓰세요</footer>
 </div>
 
 <script>
 const go = document.getElementById('go');
 const resultEl = document.getElementById('result');
 
-go.addEventListener('click', async () => {
+// 한국어 키워드를 영어로 살짝 보정하는 접미사 (이미지 모델은 영어에서 안정적)
+const NEGATIVE = 'no text, no letters, no words, no watermark';
+
+go.addEventListener('click', () => {
   const keyword = document.getElementById('keyword').value.trim();
   const style = document.getElementById('style').value;
   const ratio = document.getElementById('ratio').value;
   if(!keyword){ resultEl.innerHTML = '<div class="error">무엇을 그릴지 먼저 적어주세요!</div>'; return; }
 
+  const [w, h] = ratio.split('x');
+  const seed = Math.floor(Math.random() * 1000000);
+  const prompt = `${keyword}, ${style}, ${NEGATIVE}`;
+
+  // Pollinations: URL 자체가 이미지. 서버·키·폴링 전혀 필요 없음.
+  const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}`
+            + `?width=${w}&height=${h}&seed=${seed}&nologo=true`;
+
   go.disabled = true; go.textContent = '그리는 중...';
-  resultEl.innerHTML = '<div class="loading"><div class="spin"></div><p>붓을 들고 딸깍 그리는 중... (보통 몇 초)</p></div>';
+  resultEl.innerHTML = '<div class="loading"><div class="spin"></div><p>붓을 들고 딸깍 그리는 중... (약 10~20초)</p></div>';
 
-  // 65초가 지나도 응답이 없으면 강제로 멈추고 안내
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 65000);
-
-  try{
-    const res = await fetch('/api/generate', {
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ keyword, style, ratio }),
-      signal: controller.signal
-    });
-    clearTimeout(timeout);
-    if(!res.ok){
-      let msg = '서버 응답 오류 ('+res.status+')';
-      try{ const e = await res.json(); if(e.error) msg = e.error; }catch{}
-      throw new Error(msg);
-    }
-    const data = await res.json();
-
-    resultEl.innerHTML = `
-      <div class="imgcard">
-        <img src="${data.image}" alt="생성된 이미지">
-        <div class="actions">
-          <a class="primary" href="${data.image}" download="ddalkkak-image.png">다운로드</a>
-          <button id="again">다시 그리기</button>
-        </div>
-      </div>`;
+  const img = new Image();
+  img.onload = () => {
+    resultEl.innerHTML = '';
+    const card = document.createElement('div');
+    card.className = 'imgcard';
+    card.appendChild(img);
+    const actions = document.createElement('div');
+    actions.className = 'actions';
+    actions.innerHTML =
+      '<a class="primary" href="'+url+'" download="ddalkkak-image.png" target="_blank">다운로드</a>'
+      + '<button id="again">다시 그리기</button>';
+    card.appendChild(actions);
+    resultEl.appendChild(card);
     document.getElementById('again').addEventListener('click', () => go.click());
-  }catch(err){
-    clearTimeout(timeout);
-    const msg = err.name === 'AbortError'
-      ? '응답이 너무 오래 걸려 중단했어요. 잠시 후 다시 시도해주세요. (트래픽이 몰리면 느려질 수 있어요)'
-      : err.message;
-    resultEl.innerHTML = '<div class="error">'+esc(msg)+'</div>';
-  }finally{
     go.disabled = false; go.textContent = '이미지 딸깍';
-  }
+  };
+  img.onerror = () => {
+    resultEl.innerHTML = '<div class="error">이미지를 불러오지 못했어요. 잠시 후 다시 시도해주세요.</div>';
+    go.disabled = false; go.textContent = '이미지 딸깍';
+  };
+  img.alt = '생성된 이미지';
+  img.src = url;
 });
-
-function esc(s){ const d=document.createElement('div'); d.textContent=s??''; return d.innerHTML; }
 </script>
 </body>
 </html>
