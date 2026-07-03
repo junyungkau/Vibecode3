@@ -43,7 +43,7 @@ export default async function handler(req, res) {
         prompt,
         width: size.width,
         height: size.height,
-        steps: 4,
+        steps: 2,
         cfg_scale: 3.5,
         seed: Math.floor(Math.random() * 1000000),
         mode: 'base'
