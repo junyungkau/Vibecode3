@@ -34,49 +34,41 @@ export default async function handler(req, res) {
   }
   const prompt = `${english}, ${styleText}, ${NEGATIVE}`;
 
+  // (진단용) NVIDIA 이미지 모델 여러 개를 동시에 시도하고 각자 결과/시간을 기록
   let flux = null;
+  const probes = {};
   if (apiKey) {
-    t = Date.now();
-    try {
-      const deadline = Date.now() + 90000;
-      let r = await fetch('https://ai.api.nvidia.com/v1/genai/black-forest-labs/flux.1-schnell', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'Authorization': `Bearer ${apiKey}` },
-        body: JSON.stringify({ prompt, width, height, seed, steps: 4 }),
-        signal: AbortSignal.timeout(90000)
-      });
-      flux = r.status;
-      // 붐빌 때는 202(대기열)로 답하고 나중에 결과를 받아가라고 해요.
-      const reqId = r.headers.get('nvcf-reqid');
-      while (r.status === 202 && reqId && Date.now() < deadline) {
-        await new Promise(ok => setTimeout(ok, 1500));
-        r = await fetch(`https://api.nvcf.nvidia.com/v2/nvcf/pexec/status/${reqId}`, {
-          headers: { 'Accept': 'application/json', 'Authorization': `Bearer ${apiKey}` },
-          signal: AbortSignal.timeout(10000)
-        });
-        flux = r.status;
+    const H = { 'Content-Type': 'application/json', 'Accept': 'application/json', 'Authorization': `Bearer ${apiKey}` };
+    const jobs = {
+      'sdxl-turbo': ['stabilityai/sdxl-turbo', { text_prompts: [{ text: prompt }], seed, sampler: 'K_EULER_ANCESTRAL', steps: 2 }],
+      'sdxl': ['stabilityai/stable-diffusion-xl', { text_prompts: [{ text: prompt, weight: 1 }], cfg_scale: 5, sampler: 'K_DPM_2_ANCESTRAL', seed, steps: 25 }],
+      'sd3-medium': ['stabilityai/stable-diffusion-3-medium', { prompt, cfg_scale: 5, aspect_ratio: '1:1', seed, steps: 30, negative_prompt: '' }],
+      'flux-dev': ['black-forest-labs/flux.1-dev', { prompt, mode: 'base', cfg_scale: 3.5, width, height, seed, steps: 20 }]
+    };
+    const results = await Promise.all(Object.entries(jobs).map(async ([name, [path, body]]) => {
+      const t0 = Date.now();
+      try {
+        const r = await fetch(`https://ai.api.nvidia.com/v1/genai/${path}`, { method: 'POST', headers: H, body: JSON.stringify(body), signal: AbortSignal.timeout(40000) });
+        const txt = await r.text();
+        let b64 = null;
+        try { const j = JSON.parse(txt); b64 = j?.artifacts?.[0]?.base64 || j?.image || null; } catch {}
+        probes[name] = { status: r.status, ms: Date.now() - t0, ok: !!b64, err: b64 ? undefined : txt.slice(0, 160) };
+        return b64 ? { name, b64 } : null;
+      } catch (e) {
+        probes[name] = { status: e.name, ms: Date.now() - t0 };
+        return null;
       }
-      if (r.status === 200) {
-        const data = await r.json();
-        const b64 = data?.artifacts?.[0]?.base64;
-        if (b64) {
-          ms.image = Date.now() - t;
-          const mime = b64.startsWith('iVBOR') ? 'image/png' : 'image/jpeg';
-          return res.status(200).json({ image: `data:${mime};base64,${b64}`, prompt: english, provider: 'nvidia', ms });
-        }
-      } else if (r.status !== 202) {
-        console.error('FLUX error:', r.status, (await r.text()).slice(0, 300));
-      }
-    } catch (e) {
-      console.error('flux:', e.message);
-      flux = flux || e.name;
+    }));
+    const win = results.find(Boolean);
+    if (win) {
+      const mime = win.b64.startsWith('iVBOR') ? 'image/png' : 'image/jpeg';
+      return res.status(200).json({ image: `data:${mime};base64,${win.b64}`, prompt: english, provider: win.name, probes, ms });
     }
-    ms.image = Date.now() - t;
   }
 
   const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}`
             + `?width=${width}&height=${height}&seed=${seed}&nologo=true`;
-  return res.status(200).json({ url, prompt: english, provider: 'pollinations', flux, ms });
+  return res.status(200).json({ url, prompt: english, provider: 'pollinations', probes, ms });
 }
 
 async function toEnglish(korean, apiKey) {
