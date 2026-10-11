@@ -25,37 +25,58 @@ export default async function handler(req, res) {
   const apiKey = process.env.NVIDIA_API_KEY;
 
   // 이미지 모델은 영어를 훨씬 잘 알아들어요. 한국어 설명을 먼저 영어로 바꿉니다.
+  const ms = {};
+  let t = Date.now();
   let english = String(keyword).trim().slice(0, 200);
   if (apiKey) {
-    try { english = (await toEnglish(english, apiKey)) || english; } catch (e) { console.error(e); }
+    try { english = (await toEnglish(english, apiKey)) || english; } catch (e) { console.error('translate:', e.message); }
+    ms.translate = Date.now() - t;
   }
   const prompt = `${english}, ${styleText}, ${NEGATIVE}`;
 
+  let flux = null;
   if (apiKey) {
+    t = Date.now();
     try {
-      const r = await fetch('https://ai.api.nvidia.com/v1/genai/black-forest-labs/flux.1-schnell', {
+      const deadline = Date.now() + 35000;
+      let r = await fetch('https://ai.api.nvidia.com/v1/genai/black-forest-labs/flux.1-schnell', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'Authorization': `Bearer ${apiKey}` },
-        body: JSON.stringify({ prompt, width, height, seed, steps: 4 })
+        body: JSON.stringify({ prompt, width, height, seed, steps: 4 }),
+        signal: AbortSignal.timeout(35000)
       });
-      if (r.ok) {
+      flux = r.status;
+      // 붐빌 때는 202(대기열)로 답하고 나중에 결과를 받아가라고 해요.
+      const reqId = r.headers.get('nvcf-reqid');
+      while (r.status === 202 && reqId && Date.now() < deadline) {
+        await new Promise(ok => setTimeout(ok, 1500));
+        r = await fetch(`https://api.nvcf.nvidia.com/v2/nvcf/pexec/status/${reqId}`, {
+          headers: { 'Accept': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+          signal: AbortSignal.timeout(10000)
+        });
+        flux = r.status;
+      }
+      if (r.status === 200) {
         const data = await r.json();
         const b64 = data?.artifacts?.[0]?.base64;
         if (b64) {
+          ms.image = Date.now() - t;
           const mime = b64.startsWith('iVBOR') ? 'image/png' : 'image/jpeg';
-          return res.status(200).json({ image: `data:${mime};base64,${b64}`, prompt: english, provider: 'nvidia' });
+          return res.status(200).json({ image: `data:${mime};base64,${b64}`, prompt: english, provider: 'nvidia', ms });
         }
-      } else {
+      } else if (r.status !== 202) {
         console.error('FLUX error:', r.status, (await r.text()).slice(0, 300));
       }
     } catch (e) {
-      console.error(e);
+      console.error('flux:', e.message);
+      flux = flux || e.name;
     }
+    ms.image = Date.now() - t;
   }
 
   const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}`
             + `?width=${width}&height=${height}&seed=${seed}&nologo=true`;
-  return res.status(200).json({ url, prompt: english, provider: 'pollinations' });
+  return res.status(200).json({ url, prompt: english, provider: 'pollinations', flux, ms });
 }
 
 async function toEnglish(korean, apiKey) {
@@ -71,7 +92,8 @@ async function toEnglish(korean, apiKey) {
       temperature: 0.4,
       max_tokens: 800,
       stream: false
-    })
+    }),
+    signal: AbortSignal.timeout(15000)
   });
   if (!r.ok) return null;
   const data = await r.json();
