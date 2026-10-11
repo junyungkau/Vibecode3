@@ -38,12 +38,12 @@ export default async function handler(req, res) {
   if (apiKey) {
     t = Date.now();
     try {
-      const deadline = Date.now() + 35000;
+      const deadline = Date.now() + 90000;
       let r = await fetch('https://ai.api.nvidia.com/v1/genai/black-forest-labs/flux.1-schnell', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'Authorization': `Bearer ${apiKey}` },
         body: JSON.stringify({ prompt, width, height, seed, steps: 4 }),
-        signal: AbortSignal.timeout(35000)
+        signal: AbortSignal.timeout(90000)
       });
       flux = r.status;
       // 붐빌 때는 202(대기열)로 답하고 나중에 결과를 받아가라고 해요.
